@@ -93,8 +93,12 @@ func newHandler(token string, w *remoteWriter) http.Handler {
 
 func decodeSamples(body io.Reader) ([]sample, error) {
 	var req request
-	if err := json.NewDecoder(body).Decode(&req); err != nil {
+	dec := json.NewDecoder(body)
+	if err := dec.Decode(&req); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %v", err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("invalid JSON: unexpected data after the top-level value")
 	}
 	for i, s := range req.Samples {
 		if !metricNameRE.MatchString(s.Metric) {
