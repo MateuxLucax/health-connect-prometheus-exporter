@@ -355,7 +355,11 @@ func (fp *fakeProm) snapshot() ([]fakeRequest, map[string]float64) {
 // ---------------------------------------------------------------------------
 // Helpers to drive the exporter handler.
 
-const specToken = "s3cr3t-token"
+const specToken = "s3cr3t-token-0123456789abcdef0123"
+
+// testClient is used for every HTTP request a test makes, so a hung server
+// fails the test instead of blocking it forever.
+var testClient = &http.Client{Timeout: time.Minute}
 
 type specIn struct {
 	Metric      string            `json:"metric"`
@@ -490,6 +494,8 @@ func TestSpecValidation(t *testing.T) {
 		{"timestamp missing", sampleWith(`{"metric":"m","value":1}`)},
 		{"value missing", sampleWith(`{"metric":"m","timestamp_ms":1000}`)},
 		{"value null", sampleWith(`{"metric":"m","value":null,"timestamp_ms":1000}`)},
+		{"17 labels", sampleWith(`{"metric":"m","labels":{` + specLabels(17, 1) + `},"value":1,"timestamp_ms":1000}`)},
+		{"label value 1025 bytes", sampleWith(`{"metric":"m","labels":{` + specLabels(1, 1025) + `},"value":1,"timestamp_ms":1000}`)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -510,6 +516,7 @@ func TestSpecValidation(t *testing.T) {
 		`{"samples":[{"metric":"a:b_c","labels":{"_x":"1","X9":"2"},"value":1,"timestamp_ms":1}]}`,
 		`{"samples":[{"metric":"_m","labels":{"_":"v"},"value":0,"timestamp_ms":1}]}`,
 		`{"samples":[{"metric":"m","labels":{},"value":-1,"timestamp_ms":1}]}`,
+		`{"samples":[{"metric":"m","labels":{` + specLabels(16, 1024) + `},"value":1,"timestamp_ms":1}]}`,
 	}
 	for _, body := range ok {
 		fp := newFakeProm(t, nil)
@@ -520,18 +527,28 @@ func TestSpecValidation(t *testing.T) {
 	}
 }
 
+// specLabels returns n JSON label pairs whose values are valueLen bytes long.
+func specLabels(n, valueLen int) string {
+	pairs := make([]string, n)
+	for i := range pairs {
+		pairs[i] = fmt.Sprintf(`"l%d":%q`, i, strings.Repeat("v", valueLen))
+	}
+	return strings.Join(pairs, ",")
+}
+
 func TestSpecBodyTooLarge(t *testing.T) {
 	fp := newFakeProm(t, nil)
 	h := specHandler(fp.srv.URL)
-	// Syntactically valid JSON whose size exceeds 32 MiB.
-	big := strings.Repeat("a", 32<<20)
-	body := `{"samples":[{"metric":"m","labels":{"big":"` + big + `"},"value":1,"timestamp_ms":1000}]}`
-	if len(body) <= 32<<20 {
+	// Syntactically valid JSON of valid samples whose size exceeds 8 MiB.
+	one := `{"metric":"m","labels":{"source":"com.sec.android.app.shealth"},"value":1,"timestamp_ms":1000}`
+	n := 8<<20/len(one) + 1
+	body := `{"samples":[` + strings.TrimSuffix(strings.Repeat(one+",", n), ",") + `]}`
+	if len(body) <= 8<<20 {
 		t.Fatal("body not large enough")
 	}
 	rec := specPost(h, "Bearer "+specToken, strings.NewReader(body))
-	if rec.Code != 400 {
-		t.Errorf("status %d, want 400", rec.Code)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "too large") {
+		t.Errorf("status %d (%s), want 400 body too large", rec.Code, rec.Body)
 	}
 	if reqs, _ := fp.snapshot(); len(reqs) != 0 {
 		t.Errorf("upstream calls = %d, want 0", len(reqs))
@@ -564,7 +581,7 @@ func TestSpecFidelity(t *testing.T) {
 		{"health_heart_rate_bpm", map[string]string{"zone": "café", "source": "x", "device": "Pixel ⌚ 日本語"}, 0, 1792839600001},
 		{"health_heart_rate_bpm", map[string]string{"device": "Pixel ⌚ 日本語", "source": "x", "zone": "café"}, -3.25, 1792839600002},
 		{"health_heart_rate_bpm", map[string]string{"source": "x", "zone": "café", "device": "Pixel ⌚ 日本語"}, 1e-9, 1792839600003},
-		{"health_heart_rate_bpm", map[string]string{"source": "x", "device": "Pixel ⌚ 日本語", "zone": "café"}, 1e308, 9007199254740993}, // > 2^53
+		{"health_heart_rate_bpm", map[string]string{"source": "x", "device": "Pixel ⌚ 日本語", "zone": "café"}, 1e308, 1792839600004},
 	}
 	specPostOK(t, h, specBody(t, in))
 
@@ -594,7 +611,7 @@ func TestSpecFidelity(t *testing.T) {
 			{0, 1792839600001},
 			{-3.25, 1792839600002},
 			{1e-9, 1792839600003},
-			{1e308, 9007199254740993},
+			{1e308, 1792839600004},
 		},
 	}}
 	got := reqs[0].series
@@ -701,7 +718,11 @@ func TestSpecUpstreamErrors(t *testing.T) {
 	for _, c := range []struct {
 		status, want int
 	}{
-		{400, 204}, {404, 204}, {413, 204}, {422, 204},
+		// Only 400 means "these samples are rejected for good". Anything else
+		// (receiver disabled, wrong path, proxy auth, size limit, throttling,
+		// server error) must fail the request so the app retries later.
+		{400, 204},
+		{401, 502}, {403, 502}, {404, 502}, {405, 502}, {413, 502}, {422, 502},
 		{429, 502}, {500, 502}, {503, 502},
 	} {
 		fp := newFakeProm(t, func([]specSeries) int { return c.status })
@@ -865,8 +886,9 @@ func TestSpecStartup(t *testing.T) {
 	}{
 		{"no AUTH_TOKEN", specEnv("REMOTE_WRITE_URL=http://127.0.0.1:1/api/v1/write", "LISTEN_ADDR="+specFreeAddr(t))},
 		{"empty AUTH_TOKEN", specEnv("AUTH_TOKEN=", "REMOTE_WRITE_URL=http://127.0.0.1:1/api/v1/write", "LISTEN_ADDR="+specFreeAddr(t))},
-		{"no REMOTE_WRITE_URL", specEnv("AUTH_TOKEN=x", "LISTEN_ADDR="+specFreeAddr(t))},
-		{"empty REMOTE_WRITE_URL", specEnv("AUTH_TOKEN=x", "REMOTE_WRITE_URL=", "LISTEN_ADDR="+specFreeAddr(t))},
+		{"31-char AUTH_TOKEN", specEnv("AUTH_TOKEN="+specToken[:31], "REMOTE_WRITE_URL=http://127.0.0.1:1/api/v1/write", "LISTEN_ADDR="+specFreeAddr(t))},
+		{"no REMOTE_WRITE_URL", specEnv("AUTH_TOKEN="+specToken, "LISTEN_ADDR="+specFreeAddr(t))},
+		{"empty REMOTE_WRITE_URL", specEnv("AUTH_TOKEN="+specToken, "REMOTE_WRITE_URL=", "LISTEN_ADDR="+specFreeAddr(t))},
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, bin)
@@ -897,7 +919,7 @@ func TestSpecStartup(t *testing.T) {
 	var err error
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err = http.Get(base + "/healthz")
+		resp, err = testClient.Get(base + "/healthz")
 		if err == nil {
 			break
 		}
@@ -915,7 +937,7 @@ func TestSpecStartup(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, base+"/api/v1/samples",
 		strings.NewReader(`{"samples":[{"metric":"health_heart_rate_bpm","labels":{"source":"x"},"value":72,"timestamp_ms":1792839600000}]}`))
 	req.Header.Set("Authorization", "Bearer "+specToken)
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = testClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

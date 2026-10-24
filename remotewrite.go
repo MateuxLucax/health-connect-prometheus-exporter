@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -97,14 +98,24 @@ func splitBatches(all []series, max int) [][]series {
 	return out
 }
 
-// rejectedError is a rejection by the receiver that retrying will not fix
-// (HTTP 4xx other than 429, e.g. a sample outside the out-of-order window).
+// rejectedError is a rejection by the receiver that retrying will not fix:
+// HTTP 400, e.g. a sample outside the out-of-order window or a duplicate
+// sample for a timestamp. Any other non-2xx status (404 for a disabled
+// receiver, 401/403 from a proxy, 413, 429, 5xx) is a plain error, so the
+// request fails and the app retries later instead of losing its data.
 type rejectedError struct {
 	dropped int // number of samples dropped
 	msg     string
 }
 
 func (e *rejectedError) Error() string { return e.msg }
+
+// isTooOld reports whether a rejection message from Prometheus means a sample
+// is older than what the TSDB accepts ("too old sample" outside the
+// out-of-order window, "out of bounds" before the head's minimum time).
+func isTooOld(msg string) bool {
+	return strings.Contains(msg, "too old sample") || strings.Contains(msg, "out of bounds")
+}
 
 type remoteWriter struct {
 	url    string
@@ -128,12 +139,15 @@ func (w *remoteWriter) write(ctx context.Context, all []series) error {
 }
 
 // sendIsolating sends a batch. Prometheus discards the whole request when any
-// one sample in it is rejected, so a rejected batch is halved and resent until
-// only the offending samples are left out. They are counted in rej.
+// one sample in it is rejected, so the offending samples are left out and the
+// rest resent. They are counted in rej. Samples rejected for being too old are
+// found by a binary search on the timestamp cutoff (O(log n) requests); for
+// other rejections the batch is halved until only the offending samples are
+// left out.
 func (w *remoteWriter) sendIsolating(ctx context.Context, batch []series, rej *rejectedError) error {
 	err := w.send(ctx, batch)
-	r, ok := err.(*rejectedError)
-	if !ok {
+	var r *rejectedError
+	if !errors.As(err, &r) {
 		return err
 	}
 	n := 0
@@ -145,12 +159,75 @@ func (w *remoteWriter) sendIsolating(ctx context.Context, batch []series, rej *r
 		rej.msg = r.msg
 		return nil
 	}
+	if isTooOld(r.msg) {
+		cutoff, err := w.findCutoff(ctx, batch)
+		if err != nil {
+			return err
+		}
+		kept, dropped := dropBefore(batch, cutoff)
+		if dropped > 0 {
+			rej.dropped += dropped
+			rej.msg = r.msg
+			if len(kept) == 0 {
+				return nil
+			}
+			return w.sendIsolating(ctx, kept, rej)
+		}
+		// No sample is too old on its own; fall back to halving.
+	}
 	for _, half := range splitBatches(batch, (n+1)/2) {
 		if err := w.sendIsolating(ctx, half, rej); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// findCutoff returns the oldest timestamp in batch that the receiver does not
+// reject as too old, or math.MaxInt64 if it rejects all of them. It sends
+// single samples, binary searching over the batch sorted by timestamp.
+func (w *remoteWriter) findCutoff(ctx context.Context, batch []series) (int64, error) {
+	var all []series
+	for _, s := range batch {
+		for i := range s.points {
+			all = append(all, series{s.labels, s.points[i : i+1]})
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].points[0].tsMs < all[j].points[0].tsMs })
+	// Invariant: all[:lo] are too old, all[hi:] are not.
+	lo, hi := 0, len(all)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		err := w.send(ctx, all[mid:mid+1])
+		var r *rejectedError
+		switch {
+		case errors.As(err, &r) && isTooOld(r.msg):
+			lo = mid + 1
+		case err == nil || errors.As(err, &r):
+			hi = mid
+		default:
+			return 0, err
+		}
+	}
+	if lo == len(all) {
+		return math.MaxInt64, nil
+	}
+	return all[lo].points[0].tsMs, nil
+}
+
+// dropBefore returns batch without the points older than cutoff, and how many
+// points were removed.
+func dropBefore(batch []series, cutoff int64) ([]series, int) {
+	var kept []series
+	dropped := 0
+	for _, s := range batch {
+		i := sort.Search(len(s.points), func(i int) bool { return s.points[i].tsMs >= cutoff })
+		dropped += i
+		if i < len(s.points) {
+			kept = append(kept, series{s.labels, s.points[i:]})
+		}
+	}
+	return kept, dropped
 }
 
 func (w *remoteWriter) send(ctx context.Context, batch []series) error {
@@ -171,7 +248,7 @@ func (w *remoteWriter) send(ctx context.Context, batch []series) error {
 	switch {
 	case resp.StatusCode/100 == 2:
 		return nil
-	case resp.StatusCode/100 == 4 && resp.StatusCode != http.StatusTooManyRequests:
+	case resp.StatusCode == http.StatusBadRequest:
 		return &rejectedError{msg: fmt.Sprintf("remote write rejected (%d): %s", resp.StatusCode, bytes.TrimSpace(msg))}
 	default:
 		return fmt.Errorf("remote write failed (%d): %s", resp.StatusCode, bytes.TrimSpace(msg))
