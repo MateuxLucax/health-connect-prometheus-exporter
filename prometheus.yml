@@ -1,0 +1,5 @@
+storage:
+  tsdb:
+    # Health data arrives late and in batches. Samples older than this window
+    # are rejected by Prometheus and dropped.
+    out_of_order_time_window: 30d

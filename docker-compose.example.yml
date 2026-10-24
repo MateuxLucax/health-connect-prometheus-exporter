@@ -1,0 +1,29 @@
+services:
+  exporter:
+    build: .
+    restart: unless-stopped
+    environment:
+      AUTH_TOKEN: change-me-to-a-long-random-string
+      REMOTE_WRITE_URL: http://prometheus:9090/api/v1/write
+    ports:
+      - "8080:8080"
+    depends_on:
+      - prometheus
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+      # Default retention is only 15d; keep health history for years.
+      - --storage.tsdb.retention.time=10y
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+volumes:
+  prometheus-data:
