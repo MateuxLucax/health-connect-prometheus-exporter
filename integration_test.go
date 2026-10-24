@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -57,22 +58,34 @@ func itStartServer(t *testing.T, bin, token, writeURL string) string {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
 	t.Cleanup(func() {
 		cmd.Process.Kill()
-		cmd.Wait()
+		<-exited
 		if t.Failed() {
 			t.Logf("server log:\n%s", logs.String())
 		}
 	})
 	base := "http://" + addr
 	for deadline := time.Now().Add(10 * time.Second); ; {
-		resp, err := http.Get(base + "/healthz")
+		resp, err := testClient.Get(base + "/healthz")
 		if err == nil {
+			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			return base
+			if resp.StatusCode == 200 && string(b) == "ok" {
+				return base
+			}
+			err = fmt.Errorf("status %d %q", resp.StatusCode, b)
+		}
+		select {
+		case werr := <-exited:
+			exited <- werr // for the cleanup
+			t.Fatalf("server exited early: %v\n%s", werr, logs.String())
+		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("server never answered /healthz: %v", err)
+			t.Fatalf("server never answered /healthz with 200 ok: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -87,7 +100,7 @@ func itPost(t *testing.T, base, token string, samples []itSample) int {
 	req, _ := http.NewRequest(http.MethodPost, base+"/api/v1/samples", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := testClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +113,7 @@ func itPost(t *testing.T, base, token string, samples []itSample) int {
 func itQuery(t *testing.T, prom, query string, atMs int64) []itSeries {
 	t.Helper()
 	q := url.Values{"query": {query}, "time": {fmt.Sprintf("%d.%03d", atMs/1000, atMs%1000)}}
-	resp, err := http.Get(prom + "/api/v1/query?" + q.Encode())
+	resp, err := testClient.Get(prom + "/api/v1/query?" + q.Encode())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +156,7 @@ func itParseMs(t *testing.T, s string) int64 {
 	if len(frac) > 3 {
 		t.Fatalf("timestamp %q has sub-millisecond digits", s)
 	}
-	ms, err := strconv.ParseInt(sec+(frac+"000")[:3], 10, 64)
+	ms, err := strconv.ParseInt(sec+(frac + "000")[:3], 10, 64)
 	if err != nil {
 		t.Fatalf("timestamp %q: %v", s, err)
 	}
@@ -275,6 +288,11 @@ func TestIntegration(t *testing.T) {
 		if got := itSingle(t, itQuery(t, prom, q, start+day), "midnight"); got != total-first {
 			t.Errorf("sum at midnight = %v, want %v", got, total-first)
 		}
+		// "offset 1ms" evaluated at midnight covers the day that just ended.
+		qo := fmt.Sprintf(`sum_over_time(it_steps{run=%q}[1d] offset 1ms)`, run)
+		if got := itSingle(t, itQuery(t, prom, qo, start+day), "midnight offset 1ms"); got != total {
+			t.Errorf("sum at midnight with offset 1ms = %v, want %v", got, total)
+		}
 	})
 
 	t.Run("I3 too old mixed with valid", func(t *testing.T) {
@@ -340,9 +358,28 @@ func TestIntegration(t *testing.T) {
 	})
 
 	t.Run("I6 Prometheus down", func(t *testing.T) {
-		dead := itStartServer(t, bin, token, "http://"+specFreeAddr(t)+"/api/v1/write")
+		// Keep the port taken while the server starts, so the server cannot
+		// pick it as its own listen address; close it to make it refuse.
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dead := itStartServer(t, bin, token, "http://"+l.Addr().String()+"/api/v1/write")
+		l.Close()
 		if code := itPost(t, dead, token, []itSample{{"it_down", map[string]string{"run": run}, 1, now}}); code != 502 {
 			t.Errorf("status %d, want 502", code)
+		}
+	})
+
+	t.Run("I8 sample far in the future dropped", func(t *testing.T) {
+		labels := map[string]string{"run": run}
+		in := []itSample{{"it_future", labels, 1, now}, {"it_future", labels, 2, now + 2*hour}}
+		if code := itPost(t, base, token, in); code != 204 {
+			t.Fatalf("POST: status %d, want 204", code)
+		}
+		got := itQuery(t, prom, fmt.Sprintf(`it_future{run=%q}[4h]`, run), now+3*hour)
+		if want := []itPoint{{now, 1}}; len(got) != 1 || !reflect.DeepEqual(got[0].Points, want) {
+			t.Errorf("stored %+v, want %+v", got, want)
 		}
 	})
 

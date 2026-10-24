@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,6 +16,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
+      - run: go vet -tags integration ./...
       - run: go test ./...
 
   integration:
@@ -26,14 +30,20 @@ jobs:
           go-version-file: go.mod
       - name: Start Prometheus
         run: |
-          curl -sSfL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" | tar xz -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"
+          tarball="prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          base="https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}"
+          curl -sSfLO "$base/$tarball"
+          curl -sSfLO "$base/sha256sums.txt"
+          grep " ${tarball}\$" sha256sums.txt | sha256sum -c
+          tar xzf "$tarball"
           "$RUNNER_TEMP/prometheus-${PROMETHEUS_VERSION}.linux-amd64/prometheus" \
-            --config.file=prometheus.yml \
+            --config.file="$GITHUB_WORKSPACE/prometheus.yml" \
             --storage.tsdb.path="$RUNNER_TEMP/prometheus-data" \
             --web.enable-remote-write-receiver \
             --web.listen-address=127.0.0.1:9090 > "$RUNNER_TEMP/prometheus.log" 2>&1 &
           for i in $(seq 60); do curl -sf http://127.0.0.1:9090/-/ready && exit 0; sleep 1; done
           cat "$RUNNER_TEMP/prometheus.log"; exit 1
-      - run: go test -tags integration -count=1 ./...
+      - run: go test -tags integration -count=1 -run TestIntegration ./...
         env:
           PROMETHEUS_URL: http://127.0.0.1:9090
