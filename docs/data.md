@@ -215,8 +215,8 @@ becomes `502` for the app.
 ### In-memory model
 
 `ingest_sample` is the JSON DTO `sample` in `internal/ingest`: its `Value` is a
-pointer so a missing value is told apart from `0`. After validation it becomes
-a `remotewrite.Sample`. `Sample`, `series`, `label`, `point` and
+pointer so a missing value is told apart from `0`. It is used only for
+decoding: `decodeSamples` validates it and builds a `remotewrite.Sample`. `Sample`, `series`, `label`, `point` and
 `RejectedError` live in `internal/remotewrite`; only `Sample` and
 `RejectedError` are exported.
 
@@ -250,7 +250,7 @@ classDiagram
         Dropped int
         msg string
     }
-    ingest_sample "1" --> "1" Sample : toRemoteWrite()
+    ingest_sample "1" --> "1" Sample : decodeSamples()
     Sample "0..*" --> "1" series : groupSeries()
     series *-- label
     series *-- point

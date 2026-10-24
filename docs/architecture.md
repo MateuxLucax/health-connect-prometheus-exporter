@@ -41,9 +41,8 @@ flowchart TB
         subgraph ingest["internal/ingest"]
             mux["NewHandler()<br/>ServeMux: GET /healthz, POST /api/v1/samples"]
             auth["Bearer token check<br/>(constant-time compare)"]
-            dec["decodeSamples()<br/>JSON decode + validation, 8 MiB limit"]
+            dec["decodeSamples()<br/>JSON decode + validation, 8 MiB limit<br/>returns []remotewrite.Sample"]
             fut["dropFuture()<br/>drop samples more than 1h ahead"]
-            conv["sample.toRemoteWrite()<br/>JSON DTO to remotewrite.Sample"]
         end
         subgraph remotewrite["internal/remotewrite"]
             write["Client.Write()<br/>groupSeries: group by labels, sort, dedup timestamps"]
@@ -51,7 +50,7 @@ flowchart TB
             enc["encodeWriteRequest() + snappyEncode()<br/>hand-written protobuf, literal-only snappy"]
             send["Client.send()<br/>net/http client, 30 s timeout"]
         end
-        cfg --> mux --> auth --> dec --> fut --> conv --> write --> rw
+        cfg --> mux --> auth --> dec --> fut --> write --> rw
         rw --> enc --> send
     end
     send -->|"POST REMOTE_WRITE_URL"| prom[("Prometheus")]
@@ -83,7 +82,7 @@ flowchart LR
 |------|----------------|
 | `main.go` | Configuration from the environment, `http.Server` timeouts, wiring |
 | `internal/ingest/handler.go` | Routing, auth, future-sample filter, status mapping, logging |
-| `internal/ingest/request.go` | JSON request DTO, validation and limits, conversion to `remotewrite.Sample` |
+| `internal/ingest/request.go` | JSON request DTO (decoding only), validation and limits; `decodeSamples` returns `[]remotewrite.Sample` |
 | `internal/remotewrite/client.go` | `Client`, `RejectedError`, batching, rejected-sample isolation, upstream HTTP |
 | `internal/remotewrite/series.go` | `Sample` input, grouping into series, splitting into batches |
 | `internal/remotewrite/protobuf.go` | Hand-written `WriteRequest` protobuf encoder |

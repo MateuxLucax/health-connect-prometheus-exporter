@@ -22,8 +22,8 @@ var (
 	labelNameRE  = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 )
 
-// sample is one sample as the app sends it. Value is a pointer so that a
-// missing value is told apart from 0.
+// sample is one sample as the app sends it, used only for JSON decoding.
+// Value is a pointer so that a missing value is told apart from 0.
 type sample struct {
 	Metric      string            `json:"metric"`
 	Labels      map[string]string `json:"labels"`
@@ -35,7 +35,9 @@ type request struct {
 	Samples []sample `json:"samples"`
 }
 
-func decodeSamples(body io.Reader) ([]sample, error) {
+// decodeSamples decodes and validates a request body and returns its samples
+// ready to write.
+func decodeSamples(body io.Reader) ([]remotewrite.Sample, error) {
 	var req request
 	dec := json.NewDecoder(body)
 	if err := dec.Decode(&req); err != nil {
@@ -44,6 +46,7 @@ func decodeSamples(body io.Reader) ([]sample, error) {
 	if _, err := dec.Token(); err != io.EOF {
 		return nil, errors.New("invalid JSON: unexpected data after the top-level value")
 	}
+	out := make([]remotewrite.Sample, len(req.Samples))
 	for i, s := range req.Samples {
 		if !metricNameRE.MatchString(s.Metric) {
 			return nil, fmt.Errorf("sample %d: invalid metric name %q", i, s.Metric)
@@ -65,11 +68,7 @@ func decodeSamples(body io.Reader) ([]sample, error) {
 		if s.TimestampMs <= 0 {
 			return nil, fmt.Errorf("sample %d: timestamp_ms must be > 0", i)
 		}
+		out[i] = remotewrite.Sample{Metric: s.Metric, Labels: s.Labels, Value: *s.Value, TimestampMs: s.TimestampMs}
 	}
-	return req.Samples, nil
-}
-
-// toRemoteWrite converts a validated sample (Value is not nil).
-func (s sample) toRemoteWrite() remotewrite.Sample {
-	return remotewrite.Sample{Metric: s.Metric, Labels: s.Labels, Value: *s.Value, TimestampMs: s.TimestampMs}
+	return out, nil
 }

@@ -23,6 +23,9 @@ const maxSamplesPerRequest = 10000
 // sample for a timestamp. Any other non-2xx status (404 for a disabled
 // receiver, 401/403 from a proxy, 413, 429, 5xx) is a plain error, so the
 // request fails and the app retries later instead of losing its data.
+//
+// Only this package creates a RejectedError; callers read it with errors.As.
+// Dropped is the number of samples left out.
 type RejectedError struct {
 	Dropped int // number of samples dropped
 	msg     string
@@ -53,6 +56,9 @@ func NewClient(url string, client *http.Client) *Client {
 // *RejectedError if some samples were rejected for good (the rest were
 // written), or another error if the receiver could not be reached and the
 // whole request should be retried.
+//
+// Write does not validate samples: they must already satisfy the naming rules
+// described on Sample.
 func (c *Client) Write(ctx context.Context, samples []Sample) error {
 	return c.write(ctx, groupSeries(samples))
 }

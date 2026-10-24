@@ -33,9 +33,10 @@ internal/remotewrite/  Prometheus remote write 1.0 client: Sample, Client, NewCl
   exports only `Sample`, `Client`, `NewClient`, `(*Client).Write` and
   `RejectedError`. `Write` groups samples itself, so `series`, `label` and
   `point` stay unexported.
-- The JSON DTO (`Value *float64`, to tell a missing value from `0`) and
-  `remotewrite.Sample` (`Value float64`) are separate types, converted in one
-  small function after validation.
+- The JSON DTO (`Value *float64`, to tell a missing value from `0`) is used
+  only for decoding. `decodeSamples` validates each sample and builds the
+  `remotewrite.Sample` (`Value float64`) slice directly, so the handler works
+  on that slice without another copy.
 - `ingest.NewHandler` takes the concrete `*remotewrite.Client`. There is no
   interface between the packages: Go interfaces belong to the consumer and
   only once a second implementation exists
@@ -45,7 +46,10 @@ internal/remotewrite/  Prometheus remote write 1.0 client: Sample, Client, NewCl
   functions are not exported for tests. `spec_test.go` stays at the root and is
   black-box: it uses only `ingest.NewHandler`, `remotewrite.NewClient` and the
   compiled binary. Each test package has its own copy of the few helpers it
-  needs (`testClient`, `specLabels`, the independent snappy/protobuf decoder).
+  needs (`testClient`, `specLabels`, and in the root and `remotewrite` the
+  independent snappy/protobuf decoder). `ingest` tests do not decode the wire
+  format: they test `dropFuture` and validation directly, and the root
+  `spec_test.go` covers what reaches Prometheus.
 
 Not used, and why:
 
@@ -70,6 +74,6 @@ Not used, and why:
   unchanged. The `Dockerfile` copies `internal/` as well as the root `*.go`.
 - CI's `go vet ./...`, `go vet -tags integration ./...` and
   `go test -race ./...` walk the new packages automatically.
-- The independent test decoder exists in three copies (root, `ingest`,
+- The independent test decoder exists in two copies (root and
   `remotewrite`). It is test-only code that rarely changes; a package that
   exists only for tests would cost more.

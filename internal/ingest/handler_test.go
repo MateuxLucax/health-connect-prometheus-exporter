@@ -1,10 +1,9 @@
 package ingest
 
 import (
-	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -69,48 +68,26 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-func TestHandlerDropsFutureSamples(t *testing.T) {
-	var got []specSeries
-	calls := 0
-	rx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		raw, _ := specSnappyDecode(body)
-		ss, _ := specDecodeWriteRequest(raw)
-		got = append(got, ss...)
-		calls++
-		w.WriteHeader(204)
-	}))
-	defer rx.Close()
-	h := NewHandler("secret", remotewrite.NewClient(rx.URL, testClient))
-	post := func(body string) int {
-		req := httptest.NewRequest("POST", "/api/v1/samples", strings.NewReader(body))
-		req.Header.Set("Authorization", "Bearer secret")
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec.Code
+func TestDropFuture(t *testing.T) {
+	const maxMs = 1000
+	in := []remotewrite.Sample{
+		{Metric: "m", Value: 1, TimestampMs: 1},
+		{Metric: "m", Value: 2, TimestampMs: maxMs},
+		{Metric: "m", Value: 3, TimestampMs: maxMs + 1},
+		{Metric: "m", Value: 4, TimestampMs: 500},
+	}
+	kept, dropped := dropFuture(in, maxMs)
+	want := []remotewrite.Sample{
+		{Metric: "m", Value: 1, TimestampMs: 1},
+		{Metric: "m", Value: 2, TimestampMs: maxMs},
+		{Metric: "m", Value: 4, TimestampMs: 500},
+	}
+	if dropped != 1 || !reflect.DeepEqual(kept, want) {
+		t.Errorf("got %v, %d dropped; want %v, 1 dropped", kept, dropped, want)
 	}
 
-	now := time.Now().UnixMilli()
-	okTs := now + int64(59*time.Minute/time.Millisecond)
-	body := fmt.Sprintf(`{"samples":[
-		{"metric":"m","value":1,"timestamp_ms":%d},
-		{"metric":"m","value":2,"timestamp_ms":%d},
-		{"metric":"m","value":3,"timestamp_ms":%d}]}`,
-		now, okTs, now+int64(2*time.Hour/time.Millisecond))
-	if code := post(body); code != 204 {
-		t.Fatalf("status %d, want 204", code)
-	}
-	want := []specSample{{1, now}, {2, okTs}}
-	if len(got) != 1 || fmt.Sprint(got[0].Samples) != fmt.Sprint(want) {
-		t.Errorf("forwarded %+v, want samples %v", got, want)
-	}
-
-	// Only future samples: acknowledged without calling upstream.
-	calls = 0
-	if code := post(fmt.Sprintf(`{"samples":[{"metric":"m","value":1,"timestamp_ms":%d}]}`, now+int64(48*time.Hour/time.Millisecond))); code != 204 {
-		t.Errorf("all future: status %d, want 204", code)
-	}
-	if calls != 0 {
-		t.Errorf("all future: %d upstream calls, want 0", calls)
+	kept, dropped = dropFuture([]remotewrite.Sample{{Metric: "m", TimestampMs: maxMs + 1}}, maxMs)
+	if dropped != 1 || len(kept) != 0 {
+		t.Errorf("all future: got %v, %d dropped; want none kept, 1 dropped", kept, dropped)
 	}
 }

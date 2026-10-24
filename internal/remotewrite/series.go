@@ -6,7 +6,10 @@ import (
 )
 
 // Sample is one validated sample to write: a metric name, its labels, a value
-// and the sample's own timestamp in Unix milliseconds.
+// and the sample's own timestamp in Unix milliseconds. It must already satisfy
+// the Prometheus naming rules: Metric is a valid metric name and every label
+// name is a valid label name that does not start with "__". This package does
+// not check them; callers validate first (the ingest package does).
 type Sample struct {
 	Metric      string
 	Labels      map[string]string

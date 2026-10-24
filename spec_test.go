@@ -852,6 +852,35 @@ func TestSpecConcurrency(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// E12 Future samples
+
+func TestSpecFutureSamples(t *testing.T) {
+	fp := newFakeProm(t, nil)
+	h := specHandler(fp.srv.URL)
+	now := time.Now().UnixMilli()
+	okTs := now + (59 * time.Minute).Milliseconds()
+	futureTs := now + (2 * time.Hour).Milliseconds()
+	specPostOK(t, h, specBody(t, []specIn{
+		{"health_future", nil, 1, now},
+		{"health_future", nil, 2, okTs},
+		{"health_future", nil, 3, futureTs},
+	}))
+
+	ls := []specLabel{{"__name__", "health_future"}}
+	want := map[string]float64{specPointKey(ls, now): 1, specPointKey(ls, okTs): 2}
+	if _, stored := fp.snapshot(); !reflect.DeepEqual(stored, want) {
+		t.Errorf("stored %v, want %v (sample >1h ahead dropped)", stored, want)
+	}
+
+	// Only future samples: acknowledged without calling upstream.
+	before, _ := fp.snapshot()
+	specPostOK(t, h, specBody(t, []specIn{{"health_future", nil, 4, now + (48 * time.Hour).Milliseconds()}}))
+	if after, _ := fp.snapshot(); len(after) != len(before) {
+		t.Errorf("all future: %d upstream calls, want 0", len(after)-len(before))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // E10 Startup (real binary)
 
 func specEnv(kv ...string) []string {

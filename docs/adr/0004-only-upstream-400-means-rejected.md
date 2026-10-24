@@ -15,8 +15,9 @@ a configuration mistake.
 ## Decision
 
 `Client.send` (`internal/remotewrite`) maps only `400` to `RejectedError`.
-Rejected samples are dropped and logged, and the app gets `204`. Any other non-2xx status, and any
-network error or timeout, fails the request with `502`.
+Rejected samples are dropped and logged, and the app gets `204`. Any other
+non-2xx status, and any network error or timeout, fails the request with
+`502`.
 
 ## Consequences
 

@@ -41,11 +41,7 @@ func NewHandler(token string, w *remotewrite.Client) http.Handler {
 		if future > 0 {
 			log.Printf("dropped %d samples more than %v in the future", future, maxFuture)
 		}
-		out := make([]remotewrite.Sample, len(samples))
-		for i, s := range samples {
-			out[i] = s.toRemoteWrite()
-		}
-		err = w.Write(r.Context(), out)
+		err = w.Write(r.Context(), samples)
 		var rejected *remotewrite.RejectedError
 		switch {
 		case errors.As(err, &rejected):
@@ -64,7 +60,7 @@ func NewHandler(token string, w *remotewrite.Client) http.Handler {
 
 // dropFuture removes samples with a timestamp after maxMs and returns the
 // remaining samples and the number removed.
-func dropFuture(samples []sample, maxMs int64) ([]sample, int) {
+func dropFuture(samples []remotewrite.Sample, maxMs int64) ([]remotewrite.Sample, int) {
 	kept := samples[:0]
 	for _, s := range samples {
 		if s.TimestampMs <= maxMs {
