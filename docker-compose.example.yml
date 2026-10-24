@@ -1,6 +1,8 @@
 services:
   exporter:
-    build: .
+    image: ghcr.io/mateuxlucax/health-connect-prometheus-exporter:latest
+    # Or build from source instead:
+    # build: .
     restart: unless-stopped
     environment:
       # At least 32 characters, e.g. from `openssl rand -hex 32`. Put it in a

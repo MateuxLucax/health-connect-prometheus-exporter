@@ -95,6 +95,19 @@ the exporter reaches it on the compose network. To open it from Grafana or a
 browser on the same machine, publish it on localhost only:
 `127.0.0.1:9090:9090`.
 
+## Docker image
+
+Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GHCR by CI:
+
+```sh
+docker pull ghcr.io/mateuxlucax/health-connect-prometheus-exporter:latest  # latest release
+docker pull ghcr.io/mateuxlucax/health-connect-prometheus-exporter:main    # tip of main
+```
+
+Releases (`vX.Y.Z` tags) are also tagged `X.Y.Z` and `X.Y`. GHCR creates the
+package as private; the repository owner makes it public once in the
+package settings.
+
 ## Querying
 
 Interval metrics such as `health_steps`, `health_active_calories_kcal`,
