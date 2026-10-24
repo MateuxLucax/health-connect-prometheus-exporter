@@ -104,9 +104,16 @@ docker pull ghcr.io/mateuxlucax/health-connect-prometheus-exporter:latest  # lat
 docker pull ghcr.io/mateuxlucax/health-connect-prometheus-exporter:main    # tip of main
 ```
 
-Releases (`vX.Y.Z` tags) are also tagged `X.Y.Z` and `X.Y`. GHCR creates the
-package as private; the repository owner makes it public once in the
-package settings.
+GHCR creates the package as private; the repository owner makes it public
+once in the package settings.
+
+## Releases
+
+Every push to `main` that passes CI publishes release `vX.Y.<build>`, where
+`X.Y` comes from the `VERSION` file and `<build>` is the CI run number: a
+GitHub Release plus the image tags `X.Y.Z`, `X.Y` and `latest`. Bump `VERSION`
+to change the major or minor version. Commits that only touch `docs/` or
+Markdown files do not run CI and do not release.
 
 ## Querying
 
