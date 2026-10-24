@@ -12,8 +12,8 @@
 sequenceDiagram
     autonumber
     participant App as Bridge app
-    participant H as Handler (main.go)
-    participant W as remoteWriter (remotewrite.go)
+    participant H as Handler (internal/ingest)
+    participant W as Client (internal/remotewrite)
     participant P as Prometheus
 
     App->>H: POST /api/v1/samples (Bearer token, JSON, max 8 MiB)
@@ -23,8 +23,8 @@ sequenceDiagram
         H-->>App: 400 + short reason
     end
     H->>H: dropFuture: drop samples more than 1h ahead (logged)
-    H->>W: write(groupSeries(samples))
-    Note over W: group by metric + labels (empty values dropped),<br/>sort points by time, last sample wins per timestamp,<br/>split into batches of at most 10,000 points
+    H->>W: Write(samples)
+    Note over W: groupSeries: group by metric + labels (empty values dropped),<br/>sort points by time, last sample wins per timestamp,<br/>split into batches of at most 10,000 points
     loop each batch
         W->>W: encodeWriteRequest + snappyEncode
         W->>P: POST REMOTE_WRITE_URL (snappy protobuf)
@@ -48,11 +48,11 @@ sequenceDiagram
     autonumber
     participant App as Bridge app
     participant H as Handler
-    participant W as remoteWriter
+    participant W as Client
     participant P as Prometheus
 
     App->>H: POST /api/v1/samples
-    H->>W: write(series)
+    H->>W: Write(samples)
     W->>P: send(batch)
     P-->>W: 400 "too old sample" / "out of bounds"
     Note over W: findCutoff: sort single points by timestamp,<br/>binary search with one-point requests
@@ -69,7 +69,7 @@ sequenceDiagram
     W->>W: dropBefore(cutoff): count dropped points
     W->>P: send(kept points) via sendIsolating
     P-->>W: 204
-    W-->>H: rejectedError{dropped}
+    W-->>H: RejectedError{Dropped}
     Note over H: log "dropped N of M samples"
     H-->>App: 204 No Content
 ```
@@ -80,7 +80,7 @@ timestamp"), or when no point is too old on its own:
 ```mermaid
 sequenceDiagram
     autonumber
-    participant W as remoteWriter
+    participant W as Client
     participant P as Prometheus
 
     W->>P: send(batch of n points)
@@ -109,11 +109,11 @@ sequenceDiagram
     autonumber
     participant App as Bridge app
     participant H as Handler
-    participant W as remoteWriter
+    participant W as Client
     participant P as Prometheus
 
     App->>H: POST /api/v1/samples
-    H->>W: write(series)
+    H->>W: Write(samples)
     W->>P: send(batch)
     alt connection refused / DNS / 30 s timeout
         P--xW: network error

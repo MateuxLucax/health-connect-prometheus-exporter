@@ -1,8 +1,10 @@
 package main
 
-// Specification-driven tests. Everything sent to the fake Prometheus is decoded
-// with a snappy and protobuf decoder written here from the public format
-// descriptions, independent of the production encoder.
+// Specification-driven tests. They are black-box: they use only the exported
+// ingest.NewHandler and remotewrite.NewClient, and the compiled binary.
+// Everything sent to the fake Prometheus is decoded with a snappy and protobuf
+// decoder written here from the public format descriptions, independent of the
+// production encoder.
 
 import (
 	"bytes"
@@ -25,6 +27,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/MateuxLucax/health-connect-prometheus-exporter/internal/ingest"
+	"github.com/MateuxLucax/health-connect-prometheus-exporter/internal/remotewrite"
 )
 
 // ---------------------------------------------------------------------------
@@ -378,7 +383,7 @@ func specBody(t *testing.T, in []specIn) string {
 }
 
 func specHandler(url string) http.Handler {
-	return newHandler(specToken, &remoteWriter{url: url, client: &http.Client{Timeout: 10 * time.Second}})
+	return ingest.NewHandler(specToken, remotewrite.NewClient(url, &http.Client{Timeout: 10 * time.Second}))
 }
 
 func specPost(h http.Handler, auth string, body io.Reader) *httptest.ResponseRecorder {

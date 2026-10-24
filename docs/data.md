@@ -6,7 +6,7 @@
 
 ## HTTP API contract
 
-This contract is shared by the exporter (`main.go`) and the app
+This contract is shared by the exporter (`internal/ingest`) and the app
 (`Uploader.kt`).
 
 ### `POST /api/v1/samples`
@@ -145,7 +145,7 @@ classDiagram
 
 ## Remote write payload
 
-`remotewrite.go` hand-encodes a remote write 1.0 `prometheus.WriteRequest`
+`internal/remotewrite` hand-encodes a remote write 1.0 `prometheus.WriteRequest`
 (no generated code, no protobuf library). Only the fields below are written;
 metadata and exemplars are not used.
 
@@ -214,12 +214,24 @@ becomes `502` for the app.
 
 ### In-memory model
 
+`ingest_sample` is the JSON DTO `sample` in `internal/ingest`: its `Value` is a
+pointer so a missing value is told apart from `0`. After validation it becomes
+a `remotewrite.Sample`. `Sample`, `series`, `label`, `point` and
+`RejectedError` live in `internal/remotewrite`; only `Sample` and
+`RejectedError` are exported.
+
 ```mermaid
 classDiagram
-    class sample {
+    class ingest_sample {
         Metric string
         Labels map
         Value *float64
+        TimestampMs int64
+    }
+    class Sample {
+        Metric string
+        Labels map
+        Value float64
         TimestampMs int64
     }
     class series {
@@ -234,11 +246,12 @@ classDiagram
         value float64
         tsMs int64
     }
-    class rejectedError {
-        dropped int
+    class RejectedError {
+        Dropped int
         msg string
     }
-    sample "0..*" --> "1" series : groupSeries()
+    ingest_sample "1" --> "1" Sample : toRemoteWrite()
+    Sample "0..*" --> "1" series : groupSeries()
     series *-- label
     series *-- point
 ```

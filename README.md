@@ -150,6 +150,11 @@ go vet ./... && go test ./...
 AUTH_TOKEN=$(openssl rand -hex 32) REMOTE_WRITE_URL=http://localhost:9090/api/v1/write go run .
 ```
 
+`main.go` (configuration and wiring) stays at the repository root; the logic is
+in `internal/ingest` (HTTP API) and `internal/remotewrite` (Prometheus client).
+See [Architecture](docs/architecture.md#components) and
+[ADR 0012](docs/adr/0012-code-structure.md).
+
 ### Integration tests
 
 `integration_test.go` runs the compiled server against a real Prometheus. Start

@@ -1,4 +1,4 @@
-package main
+package remotewrite
 
 import (
 	"bytes"
@@ -11,108 +11,12 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 )
 
-func f(v float64) *float64 { return &v }
-
-func TestGroupSeries(t *testing.T) {
-	got := groupSeries([]sample{
-		{Metric: "b", Labels: map[string]string{"z": "1", "a": "2"}, Value: f(1), TimestampMs: 30},
-		{Metric: "b", Labels: map[string]string{"a": "2", "z": "1"}, Value: f(2), TimestampMs: 10},
-		{Metric: "b", Labels: map[string]string{"a": "2", "z": "1"}, Value: f(3), TimestampMs: 30}, // duplicate ts: last wins
-		{Metric: "a", Labels: map[string]string{"empty": ""}, Value: f(4), TimestampMs: 5},
-		{Metric: "a", Value: f(5), TimestampMs: 6}, // same series as above
-	})
-	want := []series{
-		{labels: []label{{"__name__", "a"}}, points: []point{{4, 5}, {5, 6}}},
-		{labels: []label{{"__name__", "b"}, {"a", "2"}, {"z", "1"}}, points: []point{{2, 10}, {3, 30}}},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %+v\nwant %+v", got, want)
-	}
-}
-
-func TestSplitBatches(t *testing.T) {
-	s := []series{
-		{labels: []label{{"__name__", "a"}}, points: make([]point, 3)},
-		{labels: []label{{"__name__", "b"}}, points: make([]point, 4)},
-	}
-	var sizes [][]int
-	for _, b := range splitBatches(s, 3) {
-		var n []int
-		for _, x := range b {
-			n = append(n, len(x.points))
-		}
-		sizes = append(sizes, n)
-	}
-	want := [][]int{{3}, {3}, {1}}
-	if !reflect.DeepEqual(sizes, want) {
-		t.Errorf("got %v, want %v", sizes, want)
-	}
-}
-
-func TestEncodeWriteRequest(t *testing.T) {
-	got := encodeWriteRequest([]series{{
-		labels: []label{{"__name__", "m"}},
-		points: []point{{1, 2}},
-	}})
-	want := []byte{
-		0x0a, 28, // timeseries (field 1), 28 bytes
-		0x0a, 13, // label (field 1), 13 bytes
-		0x0a, 8, '_', '_', 'n', 'a', 'm', 'e', '_', '_', // name
-		0x12, 1, 'm', // value
-		0x12, 11, // sample (field 2), 11 bytes
-		0x09, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, // value 1.0 as fixed64
-		0x10, 2, // timestamp 2 as varint
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("got  % x\nwant % x", got, want)
-	}
-}
-
-func TestSnappyLiteralTags(t *testing.T) {
-	// Tag encodings from the snappy format description, section 2.1.
-	cases := []struct {
-		n      int
-		header []byte
-	}{
-		{1, []byte{0x00}},
-		{60, []byte{59 << 2}},
-		{61, []byte{60 << 2, 60}},
-		{256, []byte{60 << 2, 0xff}},
-		{257, []byte{61 << 2, 0x00, 0x01}},
-		{1 << 16, []byte{61 << 2, 0xff, 0xff}},
-		{1<<16 + 1, []byte{62 << 2, 0x00, 0x00, 0x01}},
-		{1<<24 + 1, []byte{63 << 2, 0x00, 0x00, 0x00, 0x01}},
-	}
-	for _, c := range cases {
-		lit := bytes.Repeat([]byte{'x'}, c.n)
-		got := appendSnappyLiteral(nil, lit)
-		if !bytes.Equal(got[:len(c.header)], c.header) || !bytes.Equal(got[len(c.header):], lit) {
-			t.Errorf("len %d: header % x, want % x", c.n, got[:len(c.header)], c.header)
-		}
-	}
-}
-
-func TestSnappyEncode(t *testing.T) {
-	if got := snappyEncode(nil); !bytes.Equal(got, []byte{0x00}) {
-		t.Errorf("empty: % x", got)
-	}
-	if got, want := snappyEncode([]byte("abc")), []byte{0x03, 0x08, 'a', 'b', 'c'}; !bytes.Equal(got, want) {
-		t.Errorf("abc: % x, want % x", got, want)
-	}
-	// 64 KiB + 1 bytes: uvarint length, then a 64 KiB literal and a 1-byte literal.
-	src := bytes.Repeat([]byte{'y'}, 1<<16+1)
-	got := snappyEncode(src)
-	var want []byte
-	want = append(want, 0x81, 0x80, 0x04)
-	want = append(want, 61<<2, 0xff, 0xff)
-	want = append(want, src[:1<<16]...)
-	want = append(want, 0x00, 'y')
-	if !bytes.Equal(got, want) {
-		t.Errorf("64KiB+1: mismatch (len %d, want %d)", len(got), len(want))
-	}
-}
+// testClient is used for every HTTP request a test makes, so a hung server
+// fails the test instead of blocking it forever.
+var testClient = &http.Client{Timeout: time.Minute}
 
 func TestSendHeaders(t *testing.T) {
 	var hdr http.Header
@@ -124,7 +28,7 @@ func TestSendHeaders(t *testing.T) {
 	}))
 	defer rx.Close()
 	s := []series{{labels: []label{{"__name__", "m"}}, points: []point{{1, 2}}}}
-	if err := (&remoteWriter{url: rx.URL, client: testClient}).write(t.Context(), s); err != nil {
+	if err := NewClient(rx.URL, testClient).write(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
 	for k, v := range map[string]string{
@@ -162,9 +66,9 @@ func TestWriteIsolatesRejectedSamples(t *testing.T) {
 	}))
 	defer rx.Close()
 	s := []series{{labels: []label{{"__name__", "m"}}, points: []point{{0, 1}, {0, 2}, {0, 3}, {0, 4}, {0, 5}}}}
-	err := (&remoteWriter{url: rx.URL, client: testClient}).write(t.Context(), s)
-	rej, ok := err.(*rejectedError)
-	if !ok || rej.dropped != 2 {
+	err := NewClient(rx.URL, testClient).write(t.Context(), s)
+	rej, ok := err.(*RejectedError)
+	if !ok || rej.Dropped != 2 {
 		t.Fatalf("err = %v, want 2 dropped", err)
 	}
 	if want := []int64{1, 3, 5}; !reflect.DeepEqual(stored, want) {
@@ -232,9 +136,9 @@ func TestWriteAllTooOldIsLogarithmic(t *testing.T) {
 		pts[i] = point{float64(i), int64(i + 1)}
 	}
 	s := []series{{labels: []label{{"__name__", "m"}}, points: pts}}
-	err := (&remoteWriter{url: rx.URL, client: testClient}).write(t.Context(), s)
-	rej, ok := err.(*rejectedError)
-	if !ok || rej.dropped != n {
+	err := NewClient(rx.URL, testClient).write(t.Context(), s)
+	rej, ok := err.(*RejectedError)
+	if !ok || rej.Dropped != n {
 		t.Fatalf("err = %v, want %d dropped", err, n)
 	}
 	// One batch request plus ceil(log2(5000)) = 13 single-sample probes.
@@ -264,9 +168,9 @@ func TestWriteMixedTooOldKeepsValidSamples(t *testing.T) {
 	for _, x := range s {
 		sort.Slice(x.points, func(a, b int) bool { return x.points[a].tsMs < x.points[b].tsMs })
 	}
-	err := (&remoteWriter{url: rx.URL, client: testClient}).write(t.Context(), s)
-	rej, ok := err.(*rejectedError)
-	if !ok || rej.dropped != cutoff-1 {
+	err := NewClient(rx.URL, testClient).write(t.Context(), s)
+	rej, ok := err.(*RejectedError)
+	if !ok || rej.Dropped != cutoff-1 {
 		t.Fatalf("err = %v, want %d dropped", err, cutoff-1)
 	}
 	if len(p.stored) != n-cutoff+1 {

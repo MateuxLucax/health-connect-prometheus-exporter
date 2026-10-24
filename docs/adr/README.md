@@ -17,3 +17,4 @@ Consequences). The app's decisions are in the
 | [0009](0009-interval-metrics-at-interval-start.md) | Store interval metrics as the amount at the interval start | Accepted |
 | [0010](0010-token-and-no-in-process-tls.md) | Require a 32-character token; leave TLS to a reverse proxy | Accepted |
 | [0011](0011-automatic-releases.md) | Release automatically on every green push to main | Accepted |
+| [0012](0012-code-structure.md) | Code structure: `main` at the root, logic in `internal/`, no interfaces | Accepted |

@@ -1,4 +1,4 @@
-package main
+package ingest
 
 import (
 	"fmt"
@@ -8,37 +8,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MateuxLucax/health-connect-prometheus-exporter/internal/remotewrite"
 )
 
-func TestDecodeSamples(t *testing.T) {
-	cases := []struct {
-		name, body string
-		ok         bool
-	}{
-		{"valid", `{"samples":[{"metric":"health_heart_rate_bpm","labels":{"source":"com.sec.android.app.shealth"},"value":72,"timestamp_ms":1792839600000}]}`, true},
-		{"empty list", `{"samples":[]}`, true},
-		{"colon in metric", `{"samples":[{"metric":"a:b","value":1,"timestamp_ms":1}]}`, true},
-		{"not json", `nope`, false},
-		{"bad metric", `{"samples":[{"metric":"1abc","value":1,"timestamp_ms":1}]}`, false},
-		{"empty metric", `{"samples":[{"metric":"","value":1,"timestamp_ms":1}]}`, false},
-		{"bad label", `{"samples":[{"metric":"m","labels":{"a-b":"x"},"value":1,"timestamp_ms":1}]}`, false},
-		{"colon in label", `{"samples":[{"metric":"m","labels":{"a:b":"x"},"value":1,"timestamp_ms":1}]}`, false},
-		{"reserved label", `{"samples":[{"metric":"m","labels":{"__name__":"x"},"value":1,"timestamp_ms":1}]}`, false},
-		{"missing value", `{"samples":[{"metric":"m","timestamp_ms":1}]}`, false},
-		{"zero timestamp", `{"samples":[{"metric":"m","value":1,"timestamp_ms":0}]}`, false},
-		{"negative timestamp", `{"samples":[{"metric":"m","value":1,"timestamp_ms":-5}]}`, false},
-		{"16 labels", `{"samples":[{"metric":"m","labels":{` + specLabels(16, 1) + `},"value":1,"timestamp_ms":1}]}`, true},
-		{"17 labels", `{"samples":[{"metric":"m","labels":{` + specLabels(17, 1) + `},"value":1,"timestamp_ms":1}]}`, false},
-		{"1024-byte label value", `{"samples":[{"metric":"m","labels":{` + specLabels(1, 1024) + `},"value":1,"timestamp_ms":1}]}`, true},
-		{"1025-byte label value", `{"samples":[{"metric":"m","labels":{` + specLabels(1, 1025) + `},"value":1,"timestamp_ms":1}]}`, false},
-	}
-	for _, c := range cases {
-		_, err := decodeSamples(strings.NewReader(c.body))
-		if (err == nil) != c.ok {
-			t.Errorf("%s: err = %v, want ok=%v", c.name, err, c.ok)
-		}
-	}
-}
+// testClient is used for every HTTP request a test makes, so a hung server
+// fails the test instead of blocking it forever.
+var testClient = &http.Client{Timeout: time.Minute}
 
 func TestHandler(t *testing.T) {
 	const valid = `{"samples":[{"metric":"m","value":1,"timestamp_ms":1000}]}`
@@ -70,7 +46,7 @@ func TestHandler(t *testing.T) {
 		if c.upstream == 0 {
 			rx.Close()
 		}
-		h := newHandler("secret", &remoteWriter{url: rx.URL, client: testClient})
+		h := NewHandler("secret", remotewrite.NewClient(rx.URL, testClient))
 		req := httptest.NewRequest("POST", "/api/v1/samples", strings.NewReader(c.body))
 		if c.auth != "" {
 			req.Header.Set("Authorization", c.auth)
@@ -85,7 +61,7 @@ func TestHandler(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	h := newHandler("secret", &remoteWriter{})
+	h := NewHandler("secret", remotewrite.NewClient("", testClient))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 	if rec.Code != 200 || rec.Body.String() != "ok" {
@@ -105,7 +81,7 @@ func TestHandlerDropsFutureSamples(t *testing.T) {
 		w.WriteHeader(204)
 	}))
 	defer rx.Close()
-	h := newHandler("secret", &remoteWriter{url: rx.URL, client: testClient})
+	h := NewHandler("secret", remotewrite.NewClient(rx.URL, testClient))
 	post := func(body string) int {
 		req := httptest.NewRequest("POST", "/api/v1/samples", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")

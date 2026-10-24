@@ -27,34 +27,70 @@ flowchart LR
 
 ## Components
 
-Everything is in two files of package `main`.
+One binary. `package main` at the repository root reads the configuration and
+wires two packages under `internal/` together
+([ADR 0012](adr/0012-code-structure.md)).
 
 ```mermaid
 flowchart TB
     subgraph exporter["health-connect-prometheus-exporter (single binary)"]
         direction TB
-        cfg["main()<br/>env config: AUTH_TOKEN, REMOTE_WRITE_URL, LISTEN_ADDR<br/>http.Server timeouts"]
-        mux["newHandler()<br/>ServeMux: GET /healthz, POST /api/v1/samples"]
-        auth["Bearer token check<br/>(constant-time compare)"]
-        dec["decodeSamples()<br/>JSON decode + validation, 8 MiB limit"]
-        fut["dropFuture()<br/>drop samples more than 1h ahead"]
-        grp["groupSeries()<br/>group by labels, sort, dedup timestamps"]
-        rw["remoteWriter.write()<br/>splitBatches (10,000 points)<br/>sendIsolating / findCutoff / dropBefore"]
-        enc["encodeWriteRequest() + snappyEncode()<br/>hand-written protobuf, literal-only snappy"]
-        send["remoteWriter.send()<br/>net/http client, 30 s timeout"]
-        cfg --> mux --> auth --> dec --> fut --> grp --> rw
+        subgraph main["package main (main.go)"]
+            cfg["main()<br/>env config: AUTH_TOKEN, REMOTE_WRITE_URL, LISTEN_ADDR<br/>http.Server timeouts"]
+        end
+        subgraph ingest["internal/ingest"]
+            mux["NewHandler()<br/>ServeMux: GET /healthz, POST /api/v1/samples"]
+            auth["Bearer token check<br/>(constant-time compare)"]
+            dec["decodeSamples()<br/>JSON decode + validation, 8 MiB limit"]
+            fut["dropFuture()<br/>drop samples more than 1h ahead"]
+            conv["sample.toRemoteWrite()<br/>JSON DTO to remotewrite.Sample"]
+        end
+        subgraph remotewrite["internal/remotewrite"]
+            write["Client.Write()<br/>groupSeries: group by labels, sort, dedup timestamps"]
+            rw["splitBatches (10,000 points)<br/>sendIsolating / findCutoff / dropBefore"]
+            enc["encodeWriteRequest() + snappyEncode()<br/>hand-written protobuf, literal-only snappy"]
+            send["Client.send()<br/>net/http client, 30 s timeout"]
+        end
+        cfg --> mux --> auth --> dec --> fut --> conv --> write --> rw
         rw --> enc --> send
     end
     send -->|"POST REMOTE_WRITE_URL"| prom[("Prometheus")]
 ```
 
+### Import rule
+
+```mermaid
+flowchart LR
+    main["package main (root)<br/>config + wiring"]
+    ingest["internal/ingest<br/>HTTP handler, DTOs, validation"]
+    rw["internal/remotewrite<br/>client, series, protobuf, snappy"]
+    std["Go standard library"]
+    main --> ingest
+    main --> rw
+    ingest --> rw
+    ingest --> std
+    rw --> std
+```
+
+- `main` → `ingest` → `remotewrite` → standard library. Never the other way.
+- `remotewrite` knows nothing about the app's JSON contract. It exports only
+  `Sample`, `Client`, `NewClient`, `(*Client).Write` and `RejectedError`.
+- `ingest` owns the app contract ([data.md](data.md)). It exports only
+  `NewHandler`, which takes the concrete `*remotewrite.Client` (no interface).
+- `main` holds no logic beyond the configuration checks.
+
 | File | Responsibility |
 |------|----------------|
-| `main.go` | Configuration, HTTP server, routing, auth, JSON validation, future-sample filter, status mapping |
-| `remotewrite.go` | Series grouping, batching, rejected-sample isolation, protobuf and snappy encoding, upstream HTTP |
-| `main_test.go`, `remotewrite_test.go` | Unit tests |
-| `spec_test.go` | Specification tests: a fake Prometheus decodes requests with an independent snappy/protobuf decoder |
-| `integration_test.go` | The compiled binary against a real Prometheus (build tag `integration`, CI only) |
+| `main.go` | Configuration from the environment, `http.Server` timeouts, wiring |
+| `internal/ingest/handler.go` | Routing, auth, future-sample filter, status mapping, logging |
+| `internal/ingest/request.go` | JSON request DTO, validation and limits, conversion to `remotewrite.Sample` |
+| `internal/remotewrite/client.go` | `Client`, `RejectedError`, batching, rejected-sample isolation, upstream HTTP |
+| `internal/remotewrite/series.go` | `Sample` input, grouping into series, splitting into batches |
+| `internal/remotewrite/protobuf.go` | Hand-written `WriteRequest` protobuf encoder |
+| `internal/remotewrite/snappy.go` | Literal-only snappy block encoder |
+| `internal/*/*_test.go` | Unit tests per package (white-box). Each package has its own copy of the few helpers it needs |
+| `spec_test.go` | Black-box specification tests through `ingest.NewHandler` and `remotewrite.NewClient`: a fake Prometheus decodes requests with an independent snappy/protobuf decoder |
+| `integration_test.go` | The compiled binary against a real Prometheus (build tag `integration`) |
 
 ## Deployment
 
