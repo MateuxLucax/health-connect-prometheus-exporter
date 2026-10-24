@@ -157,6 +157,22 @@ PROMETHEUS_URL=http://localhost:9090 go test -tags integration -count=1 -run Tes
 Without `PROMETHEUS_URL` the integration tests are skipped. Each run uses a
 unique `run` label, so it can reuse the same Prometheus.
 
+## Documentation
+
+```mermaid
+flowchart LR
+    app["health-connect-bridge app"] -->|"POST /api/v1/samples<br/>Bearer token"| exp["this server"]
+    exp -->|"remote write<br/>original timestamps"| prom[("Prometheus")]
+    exp -.->|"204 / 400 / 401 / 502"| app
+    prom --> graf["Grafana"]
+```
+
+- [Architecture](docs/architecture.md): system context, components, deployment, trust boundaries
+- [Sequences](docs/sequences.md): request handling, partial rejection, errors, end to end
+- [Data](docs/data.md): API contract, metric catalog, remote write payload
+- [Decision records](docs/adr/README.md)
+- App side: [health-connect-bridge docs](https://github.com/MateuxLucax/health-connect-bridge/tree/main/docs)
+
 ## License
 
 [MIT](LICENSE)
