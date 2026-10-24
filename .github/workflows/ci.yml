@@ -14,3 +14,26 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      PROMETHEUS_VERSION: 3.5.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start Prometheus
+        run: |
+          curl -sSfL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" | tar xz -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/prometheus-${PROMETHEUS_VERSION}.linux-amd64/prometheus" \
+            --config.file=prometheus.yml \
+            --storage.tsdb.path="$RUNNER_TEMP/prometheus-data" \
+            --web.enable-remote-write-receiver \
+            --web.listen-address=127.0.0.1:9090 > "$RUNNER_TEMP/prometheus.log" 2>&1 &
+          for i in $(seq 60); do curl -sf http://127.0.0.1:9090/-/ready && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/prometheus.log"; exit 1
+      - run: go test -tags integration -count=1 ./...
+        env:
+          PROMETHEUS_URL: http://127.0.0.1:9090

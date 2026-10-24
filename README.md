@@ -99,6 +99,20 @@ go vet ./... && go test ./...
 AUTH_TOKEN=secret REMOTE_WRITE_URL=http://localhost:9090/api/v1/write go run .
 ```
 
+### Integration tests
+
+`integration_test.go` runs the compiled server against a real Prometheus. Start
+Prometheus with `--web.enable-remote-write-receiver` and the
+[`prometheus.yml`](prometheus.yml) from this repo (it sets the 30d
+out-of-order window), then:
+
+```sh
+PROMETHEUS_URL=http://localhost:9090 go test -tags integration -count=1 ./...
+```
+
+Without `PROMETHEUS_URL` the integration tests are skipped. Each run uses a
+unique `run` label, so it can reuse the same Prometheus.
+
 ## License
 
 [MIT](LICENSE)
