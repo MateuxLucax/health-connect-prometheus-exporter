@@ -1,4 +1,10 @@
-# health-connect-prometheus-exporter
+# Health Connect Prometheus Exporter
+
+![Go](https://img.shields.io/badge/go-%2300ADD8.svg?style=for-the-badge&logo=go&logoColor=white)
+![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)
+![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=for-the-badge&logo=Prometheus&logoColor=white)
+![Grafana](https://img.shields.io/badge/grafana-%23F46800.svg?style=for-the-badge&logo=grafana&logoColor=white)
+![Android](https://img.shields.io/badge/Health%20Connect-3DDC84?style=for-the-badge&logo=android&logoColor=white)
 
 A small server that receives health samples from the
 [health-connect-bridge](https://github.com/MateuxLucax/health-connect-bridge)
@@ -6,8 +12,12 @@ Android app and writes them to Prometheus with the
 [remote write](https://prometheus.io/docs/specs/prw/remote_write_spec/) 1.0
 protocol, keeping each sample's original timestamp.
 
-```
-Galaxy Watch → Samsung Health → Health Connect → health-connect-bridge app → this server → Prometheus
+```mermaid
+flowchart LR
+    watch["Galaxy Watch"] --> sh["Samsung Health"] --> hc["Health Connect"]
+    hc --> app["health-connect-bridge<br/>(Android app)"]
+    app -->|"POST /api/v1/samples"| exp["this server"]
+    exp -->|"remote write"| prom[("Prometheus")] --> graf["Grafana"]
 ```
 
 Health data reaches the phone late and in batches, so a scrape-based exporter
